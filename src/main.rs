@@ -4,10 +4,11 @@
 
 #![feature(asm)]
 
-extern crate panic_abort;
+extern crate cortex_m_rt as rt;
+extern crate panic_semihosting;
 
-mod exceptions;
 use core::ptr;
+use rt::entry;
 
 // LED0 = PC13;
 
@@ -16,8 +17,8 @@ pub const RCC_APB2ENR_IOPCEN: u32 = 1 << 4;
 pub const GPIOC_CRH: *mut u32 = 0x4001_1004 as *mut u32;
 pub const GPIOC_BSRR: *mut u32 = 0x4001_1010 as *mut u32;
 
-#[no_mangle]
-pub extern "C" fn main() -> ! {
+#[entry]
+fn main() -> ! {
     unsafe {
         // Enable GPIOC
         ptr::write_volatile(RCC_APB2ENR, ptr::read_volatile(RCC_APB2ENR) | RCC_APB2ENR_IOPCEN);
