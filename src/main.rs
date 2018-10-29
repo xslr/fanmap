@@ -46,24 +46,25 @@ fn main() -> ! {
         )
         .2; // 2 -> channel 3
 
-    let wait = 100;
-    let max = pwm2_3.get_max_duty();
-    let mut duty = max;
+    let wait = 1_000_000;
+    let max = pwm2_3.get_max_duty() as i32;
+    let min = max/10;
+    let mut duty : i32 = max;
     let mut is_counting_up = true;
 
     pwm2_3.enable();
 
     loop {
-        pwm2_3.set_duty(duty);
+        pwm2_3.set_duty(duty as u16);
 
-        if (is_counting_up && duty >= max) || (!is_counting_up && duty == 0) {
+        if (is_counting_up && duty >= max) || (!is_counting_up && duty <= min) {
             is_counting_up = !is_counting_up;
         }
 
         if is_counting_up {
-            duty = duty + 1;
+            duty = duty + 10;
         } else {
-            duty = duty - 1;
+            duty = duty - 10;
         }
     
         for _ in 0..wait {
