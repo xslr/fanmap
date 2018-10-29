@@ -3,14 +3,19 @@ name = "fanmap"
 version = "0.1.0"
 authors = ["Subrat Meher <smeher02.aoe3@gmail.com>"]
 
+[dependencies.embedded-hal]
+features = ["unproven"]
+
 [dependencies]
-stm32f103xx = "0.10.0"
 stm32f103xx-hal = { path = "../stm32f103xx-hal" }
 panic-abort = "0.3.1"
 cortex-m = "0.5.7"
 cortex-m-rt = "0.6.3"
+cortex-m-semihosting = "0.3.1"
 panic-semihosting = "0.5.0"
 nb = "0.1.1"
+rtfm-core = "0.2.0"
+cortex-m-rtfm = "0.3.4"
 
 [profile.dev] # used during 'cargo build'
 panic = "abort"

@@ -1,38 +1,145 @@
+//! A showcase of the `app!` macro syntax
 #![no_std]
 #![no_main]
-#![warn(unused)]
+#![deny(unsafe_code)]
 
-#![feature(asm)]
-
+extern crate cortex_m;
+#[macro_use(entry)]
 extern crate cortex_m_rt as rt;
-extern crate panic_semihosting;
+extern crate cortex_m_rtfm as rtfm;
+extern crate stm32f103xx_hal as hal;
+extern crate panic_abort;
 
-use core::ptr;
-use rt::entry;
+use cortex_m::asm;
+use hal::stm32f103xx;
+use rtfm::{app, Threshold};
 
-// LED0 = PC13;
+app! {
+    device: stm32f103xx,
 
-pub const RCC_APB2ENR: *mut u32 = 0x4002_1018 as *mut u32;
-pub const RCC_APB2ENR_IOPCEN: u32 = 1 << 4;
-pub const GPIOC_CRH: *mut u32 = 0x4001_1004 as *mut u32;
-pub const GPIOC_BSRR: *mut u32 = 0x4001_1010 as *mut u32;
+    resources: {
+        static CO_OWNED: u32 = 0;
+        static ON: bool = false;
+        static OWNED: bool = false;
+        static SHARED: bool = false;
+    },
+
+    init: {
+        // This is the path to the `init` function
+        //
+        // `init` doesn't necessarily has to be in the root of the crate
+        path: main::init,
+    },
+
+    idle: {
+        // This is a path to the `idle` function
+        //
+        // `idle` doesn't necessarily has to be in the root of the crate
+        path: main::idle,
+        resources: [OWNED, SHARED],
+    },
+
+    tasks: {
+        SYS_TICK: {
+            path: sys_tick,
+            // If omitted priority is assumed to be 1
+            // priority: 1,
+            resources: [CO_OWNED, ON, SHARED],
+        },
+
+        TIM2: {
+            // Tasks are enabled, between `init` and `idle`, by default but they
+            // can start disabled if `false` is specified here
+            enabled: false,
+            path: tim2,
+            priority: 1,
+            resources: [CO_OWNED],
+        },
+    },
+}
+
+mod main {
+    use rtfm::{self, Resource, Threshold};
+
+    pub fn init(_p: ::init::Peripherals, _r: ::init::Resources) {
+        // configure_pins();
+        // timer init
+    }
+
+    pub fn idle(t: &mut Threshold, mut r: ::idle::Resources) -> ! {
+        loop {
+            *r.OWNED = !*r.OWNED;
+
+            if *r.OWNED {
+                if r.SHARED.claim(t, |shared, _| *shared) {
+                    rtfm::wfi();
+                }
+            } else {
+                r.SHARED.claim_mut(t, |shared, _| *shared = !*shared);
+            }
+        }
+    }
+
+    pub fn configure_pins() {
+        use cortex_m::asm;
+        use hal::prelude::*;
+
+        let p = ::stm32f103xx::Peripherals::take().unwrap();
+
+        let mut flash = p.FLASH.constrain();
+        let mut rcc = p.RCC.constrain();
+
+        let clocks = rcc.cfgr.freeze(&mut flash.acr);
+        let mut afio = p.AFIO.constrain(&mut rcc.apb2);
+        // let mut gpioa = p.GPIOA.split(&mut rcc.apb2);
+        let mut gpiob = p.GPIOB.split(&mut rcc.apb2);
+
+        let c1 = gpiob.pb6.into_alternate_push_pull(&mut gpiob.crl);
+        let c2 = gpiob.pb7.into_alternate_push_pull(&mut gpiob.crl);
+        let c3 = gpiob.pb8.into_alternate_push_pull(&mut gpiob.crh);
+        let c4 = gpiob.pb9.into_alternate_push_pull(&mut gpiob.crh);
+
+        let mut pwm = p.TIM4.pwm(
+            (c1, c2, c3, c4),
+            &mut afio.mapr,
+            1.khz(),
+            clocks,
+            &mut rcc.apb1,
+        )
+        .3;
+
+        let max = pwm.get_max_duty();
+
+        pwm.enable();
+
+        // full
+        // pwm.set_duty(max);
+        // asm::bkpt();
+
+        // dim
+        pwm.set_duty(max / 4);
+        asm::bkpt();
+
+        // zero
+        // pwm.set_duty(0);
+        // asm::bkpt();
+    }
+}
+
+fn sys_tick(_t: &mut Threshold, mut r: SYS_TICK::Resources) {
+    *r.ON = !*r.ON;
+
+    *r.CO_OWNED += 1;
+}
+
+fn tim2(_t: &mut Threshold, mut r: TIM2::Resources) {
+    *r.CO_OWNED += 1;
+}
 
 #[entry]
-fn main() -> ! {
-    unsafe {
-        // Enable GPIOC
-        ptr::write_volatile(RCC_APB2ENR, ptr::read_volatile(RCC_APB2ENR) | RCC_APB2ENR_IOPCEN);
-        // Set PC13 Mode = Output
-        ptr::write_volatile(GPIOC_CRH, 0x44544444);
-        loop {
-            // Set PC13
-            ptr::write_volatile(GPIOC_BSRR, 1 << (13 + 16));
-            // Delay approx 1/2 second
-            for _ in 0..125_000 { asm!("nop") }
-            // Reset Set PC13
-            ptr::write_volatile(GPIOC_BSRR, 1 << 13);
-            // Delay approx 1/2 second
-            for _ in 0..125_000 { asm!("nop") }
-        }
+fn main_wrapper() -> ! {
+    main();
+    loop {
+        asm::bkpt();
     }
 }
