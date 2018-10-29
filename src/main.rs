@@ -1,145 +1,83 @@
-//! A showcase of the `app!` macro syntax
-#![no_std]
-#![no_main]
+//! Testing PWM output
+//! Ramp the duty cycle up and down
+
 #![deny(unsafe_code)]
+// #![deny(warnings)]
+#![no_main]
+#![no_std]
 
-extern crate cortex_m;
-#[macro_use(entry)]
 extern crate cortex_m_rt as rt;
-extern crate cortex_m_rtfm as rtfm;
+extern crate cortex_m;
+extern crate panic_semihosting;
 extern crate stm32f103xx_hal as hal;
-extern crate panic_abort;
 
-use cortex_m::asm;
+use hal::prelude::*;
 use hal::stm32f103xx;
-use rtfm::{app, Threshold};
+use rt::{entry, exception, ExceptionFrame};
+use cortex_m::asm;
 
-app! {
-    device: stm32f103xx,
+#[entry]
+fn main() -> ! {
+    let p = stm32f103xx::Peripherals::take().unwrap();
 
-    resources: {
-        static CO_OWNED: u32 = 0;
-        static ON: bool = false;
-        static OWNED: bool = false;
-        static SHARED: bool = false;
-    },
+    let mut flash = p.FLASH.constrain();
+    let mut rcc = p.RCC.constrain();
 
-    init: {
-        // This is the path to the `init` function
-        //
-        // `init` doesn't necessarily has to be in the root of the crate
-        path: main::init,
-    },
+    let clocks = rcc.cfgr.freeze(&mut flash.acr);
 
-    idle: {
-        // This is a path to the `idle` function
-        //
-        // `idle` doesn't necessarily has to be in the root of the crate
-        path: main::idle,
-        resources: [OWNED, SHARED],
-    },
+    let mut afio = p.AFIO.constrain(&mut rcc.apb2);
 
-    tasks: {
-        SYS_TICK: {
-            path: sys_tick,
-            // If omitted priority is assumed to be 1
-            // priority: 1,
-            resources: [CO_OWNED, ON, SHARED],
-        },
+    let mut gpioa = p.GPIOA.split(&mut rcc.apb2);
+    // let mut gpiob = p.GPIOB.split(&mut rcc.apb2);
 
-        TIM2: {
-            // Tasks are enabled, between `init` and `idle`, by default but they
-            // can start disabled if `false` is specified here
-            enabled: false,
-            path: tim2,
-            priority: 1,
-            resources: [CO_OWNED],
-        },
-    },
-}
+    // TIM2
+    let c1 = gpioa.pa0.into_alternate_push_pull(&mut gpioa.crl);
+    let c2 = gpioa.pa1.into_alternate_push_pull(&mut gpioa.crl);
+    let c3 = gpioa.pa2.into_alternate_push_pull(&mut gpioa.crl);
+    let c4 = gpioa.pa3.into_alternate_push_pull(&mut gpioa.crl);
 
-mod main {
-    use rtfm::{self, Resource, Threshold};
-
-    pub fn init(_p: ::init::Peripherals, _r: ::init::Resources) {
-        // configure_pins();
-        // timer init
-    }
-
-    pub fn idle(t: &mut Threshold, mut r: ::idle::Resources) -> ! {
-        loop {
-            *r.OWNED = !*r.OWNED;
-
-            if *r.OWNED {
-                if r.SHARED.claim(t, |shared, _| *shared) {
-                    rtfm::wfi();
-                }
-            } else {
-                r.SHARED.claim_mut(t, |shared, _| *shared = !*shared);
-            }
-        }
-    }
-
-    pub fn configure_pins() {
-        use cortex_m::asm;
-        use hal::prelude::*;
-
-        let p = ::stm32f103xx::Peripherals::take().unwrap();
-
-        let mut flash = p.FLASH.constrain();
-        let mut rcc = p.RCC.constrain();
-
-        let clocks = rcc.cfgr.freeze(&mut flash.acr);
-        let mut afio = p.AFIO.constrain(&mut rcc.apb2);
-        // let mut gpioa = p.GPIOA.split(&mut rcc.apb2);
-        let mut gpiob = p.GPIOB.split(&mut rcc.apb2);
-
-        let c1 = gpiob.pb6.into_alternate_push_pull(&mut gpiob.crl);
-        let c2 = gpiob.pb7.into_alternate_push_pull(&mut gpiob.crl);
-        let c3 = gpiob.pb8.into_alternate_push_pull(&mut gpiob.crh);
-        let c4 = gpiob.pb9.into_alternate_push_pull(&mut gpiob.crh);
-
-        let mut pwm = p.TIM4.pwm(
+    let mut pwm2_3 = p.TIM2
+        .pwm(
             (c1, c2, c3, c4),
             &mut afio.mapr,
-            1.khz(),
+            25.khz(),
             clocks,
             &mut rcc.apb1,
         )
-        .3;
+        .2; // 2 -> channel 3
 
-        let max = pwm.get_max_duty();
+    let wait = 100;
+    let max = pwm2_3.get_max_duty();
+    let mut duty = max;
+    let mut is_counting_up = true;
 
-        pwm.enable();
+    pwm2_3.enable();
 
-        // full
-        // pwm.set_duty(max);
-        // asm::bkpt();
-
-        // dim
-        pwm.set_duty(max / 4);
-        asm::bkpt();
-
-        // zero
-        // pwm.set_duty(0);
-        // asm::bkpt();
-    }
-}
-
-fn sys_tick(_t: &mut Threshold, mut r: SYS_TICK::Resources) {
-    *r.ON = !*r.ON;
-
-    *r.CO_OWNED += 1;
-}
-
-fn tim2(_t: &mut Threshold, mut r: TIM2::Resources) {
-    *r.CO_OWNED += 1;
-}
-
-#[entry]
-fn main_wrapper() -> ! {
-    main();
     loop {
-        asm::bkpt();
+        pwm2_3.set_duty(duty);
+
+        if (is_counting_up && duty >= max) || (!is_counting_up && duty == 0) {
+            is_counting_up = !is_counting_up;
+        }
+
+        if is_counting_up {
+            duty = duty + 1;
+        } else {
+            duty = duty - 1;
+        }
+    
+        for _ in 0..wait {
+            asm::nop();
+        }
     }
+}
+
+#[exception]
+fn HardFault(ef: &ExceptionFrame) -> ! {
+    panic!("{:#?}", ef);
+}
+
+#[exception]
+fn DefaultHandler(irqn: i16) {
+    panic!("Unhandled exception (IRQn = {})", irqn);
 }
