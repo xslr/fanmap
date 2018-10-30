@@ -1,8 +1,5 @@
-//! Testing PWM output
-//! Ramp the duty cycle up and down
 
 #![deny(unsafe_code)]
-// #![deny(warnings)]
 #![no_main]
 #![no_std]
 
@@ -36,41 +33,44 @@ fn main() -> ! {
     let c3 = gpioa.pa2.into_alternate_push_pull(&mut gpioa.crl);
     let c4 = gpioa.pa3.into_alternate_push_pull(&mut gpioa.crl);
 
-    let mut pwm2_3 = p.TIM2
+    let mut pwm2  = p.TIM2
         .pwm(
             (c1, c2, c3, c4),
             &mut afio.mapr,
             25.khz(),
             clocks,
             &mut rcc.apb1,
-        )
-        .2; // 2 -> channel 3
+        );
 
     let wait = 1_000_000;
     let step = 10;
-    let max = pwm2_3.get_max_duty() as i32;
+    let max = pwm2.3.get_max_duty() as i32;
     let min = max/10;
     let mut duty = max;
     let mut is_counting_up = true;
 
-    pwm2_3.enable();
+    pwm2.2.enable();
+    pwm2.2.set_duty((max*12/100) as u16);   // cpu
+
+    pwm2.3.enable();
+    pwm2.3.set_duty((max*12/100) as u16);   // other fans
 
     loop {
-        pwm2_3.set_duty(duty as u16);
+        // pwm2_3.set_duty(duty as u16);
 
-        if (is_counting_up && duty >= max) || (!is_counting_up && duty <= min) {
-            is_counting_up = !is_counting_up;
-        }
+        // if (is_counting_up && duty >= max) || (!is_counting_up && duty <= min) {
+        //     is_counting_up = !is_counting_up;
+        // }
 
-        if is_counting_up {
-            duty = duty + step;
-        } else {
-            duty = duty - step;
-        }
+        // if is_counting_up {
+        //     duty = duty + step;
+        // } else {
+        //     duty = duty - step;
+        // }
     
-        for _ in 0..wait {
-            asm::nop();
-        }
+        // for _ in 0..wait {
+        //     asm::nop();
+        // }
     }
 }
 
