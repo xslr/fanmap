@@ -1,14 +1,23 @@
 #![no_std]
 #![no_main]
+#![feature(alloc)]
+#![feature(alloc_error_handler)]
+#![feature(lang_items)]
 
+mod cdc_acm;
+
+extern crate alloc;
+extern crate alloc_cortex_m;
 extern crate cortex_m;
-#[macro_use]
-extern crate cortex_m_rt as rt;
+#[macro_use] extern crate cortex_m_rt as rt;
 extern crate panic_semihosting;
 extern crate stm32f103xx_hal as hal;
 extern crate usb_device;
 extern crate stm32f103xx_usb;
 
+use alloc::vec::Vec;
+use alloc::collections::VecDeque;
+use alloc_cortex_m::CortexMHeap;
 use hal::prelude::*;
 use hal::stm32f103xx;
 use rt::ExceptionFrame;
@@ -16,159 +25,60 @@ use rt::ExceptionFrame;
 use usb_device::prelude::*;
 use stm32f103xx_usb::UsbBus;
 
-// Minimal CDC-ACM implementation
-mod cdc_acm {
-    use core::cmp::min;
-    use usb_device::class_prelude::*;
-    use usb_device::utils::AtomicMutex;
-    use usb_device::Result;
 
-    pub const USB_CLASS_CDC: u8 = 0x02;
-    const USB_CLASS_DATA: u8 = 0x0a;
-    const CDC_SUBCLASS_ACM: u8 = 0x02;
-    const CDC_PROTOCOL_AT: u8 = 0x01;
+#[global_allocator]
+static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
-    const CS_INTERFACE: u8 = 0x24;
-    const CDC_TYPE_HEADER: u8 = 0x00;
-    const CDC_TYPE_CALL_MANAGEMENT: u8 = 0x01;
-    const CDC_TYPE_ACM: u8 = 0x02;
-    const CDC_TYPE_UNION: u8 = 0x06;
 
-    const REQ_SET_LINE_CODING: u8 = 0x20;
-    const REQ_SET_CONTROL_LINE_STATE: u8 = 0x22;
+#[no_mangle]
+struct MessageProcessor {
+    rx_buf: VecDeque<u8>,
+    tx_buf: Vec<u8>
+}
 
-    struct Buf {
-        buf: [u8; 64],
-        len: usize,
-    }
-
-    pub struct SerialPort<'a, B: 'a + UsbBus + Sync> {
-        comm_if: InterfaceNumber,
-        comm_ep: EndpointIn<'a, B>,
-        data_if: InterfaceNumber,
-        read_ep: EndpointOut<'a, B>,
-        write_ep: EndpointIn<'a, B>,
-
-        read_buf: AtomicMutex<Buf>,
-    }
-
-    impl<'a, B: UsbBus + Sync> SerialPort<'a, B> {
-        pub fn new(bus: &'a UsbBusWrapper<B>) -> SerialPort<'a, B> {
-            SerialPort {
-                comm_if: bus.interface(),
-                comm_ep: bus.interrupt(8, 255),
-                data_if: bus.interface(),
-                read_ep: bus.bulk(64),
-                write_ep: bus.bulk(64),
-                read_buf: AtomicMutex::new(Buf {
-                    buf: [0; 64],
-                    len: 0,
-                }),
-            }
-        }
-
-        pub fn write(&self, data: &[u8]) -> Result<usize> {
-            match self.write_ep.write(data) {
-                Ok(count) => Ok(count),
-                Err(UsbError::Busy) => Ok(0),
-                e => e,
-            }
-        }
-
-        pub fn read(&self, data: &mut [u8]) -> Result<usize> {
-            let mut guard = self.read_buf.try_lock();
-
-            let buf = match guard {
-                Some(ref mut buf) => buf,
-                None => { return Ok(0) },
-            };
-
-            // Terrible buffering implementation for brevity's sake
-
-            if buf.len == 0 {
-                buf.len = match self.read_ep.read(&mut buf.buf) {
-                    Ok(count) => count,
-                    Err(UsbError::NoData) => return Ok(0),
-                    e => return e,
-                };
-            }
-
-            if buf.len == 0 {
-                return Ok(0);
-            }
-
-            let count = min(data.len(), buf.len);
-
-            &data[..count].copy_from_slice(&buf.buf[0..count]);
-
-            buf.buf.rotate_left(count);
-            buf.len -= count;
-
-            Ok(count)
+#[no_mangle]
+impl MessageProcessor {
+    #[no_mangle]
+    fn new() -> MessageProcessor {
+        MessageProcessor {
+            rx_buf: VecDeque::with_capacity(128),
+            tx_buf: Vec::with_capacity(128),
         }
     }
 
-    impl<'a, B: UsbBus + Sync> UsbClass for SerialPort<'a, B> {
-        fn get_configuration_descriptors(&self, writer: &mut DescriptorWriter) -> Result<()> {
-            // TODO: make a better DescriptorWriter to make it harder to make invalid descriptors
-            writer.interface(
-                self.comm_if,
-                1,
-                USB_CLASS_CDC,
-                CDC_SUBCLASS_ACM,
-                CDC_PROTOCOL_AT)?;
+    #[no_mangle]
+    pub fn rx_msg(&mut self, buf: &[u8]) {
+        self.rx_buf.extend(buf.iter());
 
-            writer.write(
-                CS_INTERFACE,
-                &[CDC_TYPE_HEADER, 0x10, 0x01])?;
-
-            writer.write(
-                CS_INTERFACE,
-                &[CDC_TYPE_CALL_MANAGEMENT, 0x00, self.data_if.into()])?;
-
-            writer.write(
-                CS_INTERFACE,
-                &[CDC_TYPE_ACM, 0x00])?;
-
-            writer.write(
-                CS_INTERFACE,
-                &[CDC_TYPE_UNION, self.comm_if.into(), self.data_if.into()])?;
-
-            writer.endpoint(&self.comm_ep)?;
-
-            writer.interface(
-                self.data_if,
-                2,
-                USB_CLASS_DATA,
-                0x00,
-                0x00)?;
-
-            writer.endpoint(&self.write_ep)?;
-            writer.endpoint(&self.read_ep)?;
-
-            Ok(())
+        // process message
+        {
+            let (rx_slice0,rx_slice1) = self.rx_buf.as_slices();
+            self.tx_buf.extend_from_slice(rx_slice0);
+            self.tx_buf.extend_from_slice(rx_slice1);
         }
 
-        fn control_out(&self, req: &control::Request, buf: &[u8]) -> ControlOutResult {
-            let _ = buf;
+        self.rx_buf.clear();
+    }
 
-            if req.request_type == control::RequestType::Class
-                && req.recipient == control::Recipient::Interface
-            {
-                return match req.request {
-                    REQ_SET_LINE_CODING => ControlOutResult::Ok,
-                    REQ_SET_CONTROL_LINE_STATE => ControlOutResult::Ok,
-                    _ => ControlOutResult::Ignore,
-                };
-            }
+    #[no_mangle]
+    pub fn tx_msg(&self) -> &[u8] {
+        self.tx_buf.as_slice()
+    }
 
-            ControlOutResult::Ignore
-        }
+    #[no_mangle]
+    pub fn consume_tx(&mut self, count: usize) {
+        let new_len = self.tx_buf.len() - count;
+        self.tx_buf.resize(new_len, 0);
     }
 }
 
 #[entry]
 fn main() -> ! {
+    // Initialize the allocator BEFORE using it
+    let start = rt::heap_start() as usize;
+    let size = 1024; // in bytes
+    unsafe { ALLOCATOR.init(start, size) }
+
     let dp = stm32f103xx::Peripherals::take().unwrap();
 
     let mut flash = dp.FLASH.constrain();
@@ -190,30 +100,43 @@ fn main() -> ! {
     let serial = cdc_acm::SerialPort::new(&usb_bus);
 
     let usb_dev = UsbDevice::new(&usb_bus, UsbVidPid(0x5824, 0x27dd))
-        .manufacturer("Fake company")
-        .product("Serial port")
-        .serial_number("TEST")
+        .manufacturer("Subrat Meher")
+        .product("Fan speed controller")
+        .serial_number("12341234")
         .device_class(cdc_acm::USB_CLASS_CDC)
         .build(&[&serial]);
 
     usb_dev.force_reset().expect("reset failed");
 
+    let mut msg_proc = MessageProcessor::new();
+
     loop {
         usb_dev.poll();
 
         if usb_dev.state() == UsbDeviceState::Configured {
-            let mut buf = [0u8; 8];
+            let mut buf = [0u8; 128];
 
             match serial.read(&mut buf) {
                 Ok(count) if count > 0 => {
-                    // Echo back in upper case
-                    for c in buf[0..count].iter_mut() {
-                        if 0x61 <= *c && *c <= 0x7a {
-                            *c &= !0x20;
+                    msg_proc.rx_msg(&buf[0..count]);
+                    let mut tx_result = {
+                        let tx_data: &[u8] = msg_proc.tx_msg();
+                        if tx_data.len() > 0 {
+                            serial.write(tx_data)
+                        } else {
+                            Err(usb_device::UsbError::NoData)
                         }
-                    }
+                    };
 
-                    serial.write(&buf[0..count]).ok();
+                    match tx_result {
+                        Ok(count) if count > 0 => {
+                            msg_proc.consume_tx(count);
+                        },
+                        Ok(_) => {
+                            // nothing was written, but no error
+                        },
+                        Err(_) => { panic!("Write failed"); }
+                    }
                 },
                 _ => { },
             }
@@ -229,4 +152,18 @@ fn HardFault(ef: &ExceptionFrame) -> ! {
 #[exception]
 fn DefaultHandler(irqn: i16) {
     panic!("Unhandled exception (IRQn = {})", irqn);
+}
+
+#[alloc_error_handler]
+fn rust_oom(_: core::alloc::Layout) -> ! {
+    panic!("Out of memory.");
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rust_begin_unwind(
+    _args: ::core::fmt::Arguments,
+    _file: &'static str,
+    _line: u32,
+) -> ! {
+    panic!("rust_begin_unwind");
 }
