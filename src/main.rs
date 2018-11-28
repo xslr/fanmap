@@ -16,7 +16,6 @@ extern crate usb_device;
 extern crate stm32f103xx_usb;
 
 use alloc::vec::Vec;
-use alloc::collections::VecDeque;
 use alloc_cortex_m::CortexMHeap;
 use hal::prelude::*;
 use hal::stm32f103xx;
@@ -29,8 +28,8 @@ use stm32f103xx_usb::UsbBus;
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
-static DEFAULT_CPU_DUTY: i32 = 0;
-static DEFAULT_SYS_DUTY: i32 = 0;
+static DEFAULT_CPU_DUTY: i32 = 10;
+static DEFAULT_SYS_DUTY: i32 = 10;
 static SIGNATURE_RX: [u8; 2] = [0xAB, 0xCD];
 static SIGNATURE_TX: [u8; 2] = [0x78, 0x34];
 
@@ -42,7 +41,7 @@ enum RxOffset {
 
 #[no_mangle]
 struct MessageProcessor {
-    rx_buf: VecDeque<u8>,
+    rx_buf: Vec<u8>,
     tx_buf: Vec<u8>,
     cpu_duty: (u8, bool),
     sys_duty: (u8, bool),
@@ -54,7 +53,7 @@ impl MessageProcessor {
     #[no_mangle]
     fn new() -> MessageProcessor {
         MessageProcessor {
-            rx_buf: VecDeque::with_capacity(128),
+            rx_buf: Vec::with_capacity(128),
             tx_buf: Vec::with_capacity(128),
             cpu_duty: (DEFAULT_CPU_DUTY as u8, false),
             sys_duty: (DEFAULT_SYS_DUTY as u8, false),
@@ -64,34 +63,30 @@ impl MessageProcessor {
 
     #[no_mangle]
     pub fn rx_msg(&mut self, buf: &[u8]) {
-        self.rx_buf.extend(buf.iter());
-
-        // process message
-        // if SIGNATURE_RX[0] != buf[0] || SIGNATURE_RX[1] != buf[1] {
+        // if SIGNATURE_RX[0] != buf[1] || SIGNATURE_RX[1] != buf[0] {
         //     return;
         // }
 
+        self.rx_buf.extend_from_slice(buf);
+        self.tx_buf.extend_from_slice(self.rx_buf.as_slice()); // echo
 
-        self.cpu_duty.1 = true;
-        self.sys_duty.1 = true;
+        if self.rx_buf.len() == 4 {
+            let new_cpu_duty = self.rx_buf[2];
+            if new_cpu_duty != self.cpu_duty.0 {
+                self.cpu_duty = (new_cpu_duty, true);
+            }
 
-        // let new_cpu_duty = buf[RxOffset::CpuDuty as usize];
-        // if new_cpu_duty != self.cpu_duty.0 {
-        //     self.cpu_duty = (new_cpu_duty, true);
-        // }
+            let new_sys_duty = self.rx_buf[3];
+            if new_sys_duty != self.sys_duty.0 {
+                self.sys_duty = (new_sys_duty, true);
+            }
 
-        // let new_sys_duty = buf[RxOffset::SysDuty as usize];
-        // if new_sys_duty != self.sys_duty.0 {
-        //     self.sys_duty = (new_sys_duty, true);
-        // }
-
-        {
-            let (rx_slice0, rx_slice1) = self.rx_buf.as_slices();
-            self.tx_buf.extend_from_slice(rx_slice0);
-            self.tx_buf.extend_from_slice(rx_slice1);
+            self.tx_buf.push('%' as u8);
+            self.rx_buf.clear();
         }
-
-        self.rx_buf.clear();
+        else {
+            self.tx_buf.push('X' as u8);
+        }
     }
 
     #[no_mangle]
@@ -185,43 +180,36 @@ fn main() -> ! {
             match serial.read(&mut buf) {
                 Ok(count) if count > 0 => {
                     msg_proc.rx_msg(&buf[0..count]);
-                    let mut tx_result = {
-                        let tx_data: &[u8] = msg_proc.tx_msg();
-                        if tx_data.len() > 0 {
-                            serial.write(tx_data)
-                        } else {
-                            Err(usb_device::UsbError::NoData)
-                        }
-                    };
-
-                    match tx_result {
-                        Ok(count) if count > 0 => {
-                            msg_proc.consume_tx(count);
-                        },
-                        Ok(_) => {
-                            // nothing was written, but no error
-                        },
-                        Err(_) => { panic!("Write failed"); }
-                    }
                 },
                 _ => { },
             }
+
+            let tx_result =
+            {
+                let tx_data: &[u8] = msg_proc.tx_msg();
+                if tx_data.len() > 0 {
+                    serial.write(tx_data)
+                } else {
+                    Err(usb_device::UsbError::NoData)
+                }
+            };
+
+            match tx_result {
+                Ok(n) if n > 0 => { msg_proc.consume_tx(n); },
+                Ok(_) => { /* no data written, but no error */ },
+                Err(_) => { },
+            }
         }
 
-        // if msg_proc.cpu_duty.1 == true {
-        //     pwm2.2.set_duty((max*20/100) as u16);   // cpu
-        //     //pwm2.2.set_duty((max*(msg_proc.cpu_duty.0 as i32)/100) as u16);   // cpu
-        //     //msg_proc.cpu_duty.1 = false;
-        // }
+        if msg_proc.cpu_duty.1 == true {
+            pwm2.2.set_duty((max*(msg_proc.cpu_duty.0 as i32)/100) as u16);   // cpu
+            msg_proc.cpu_duty.1 = false;
+        }
 
-        // if msg_proc.sys_duty.1 == true {
-        //     pwm2.3.set_duty((max*20/100) as u16);   // other fans
-        //     //pwm2.3.set_duty((max*(msg_proc.sys_duty.0 as i32)/100) as u16);   // other fans
-        //     //msg_proc.sys_duty.1 = false;
-        // }
-
-        // pwm2.2.set_duty((max*20/100) as u16);   // cpu
-        // pwm2.3.set_duty((max*20/100) as u16);   // other fans
+        if msg_proc.sys_duty.1 == true {
+            pwm2.3.set_duty((max*(msg_proc.sys_duty.0 as i32)/100) as u16);   // other fans
+            msg_proc.sys_duty.1 = false;
+        }
     }
 }
 
