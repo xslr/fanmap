@@ -28,8 +28,8 @@ use stm32f103xx_usb::UsbBus;
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
-static DEFAULT_CPU_DUTY: i32 = 10;
-static DEFAULT_SYS_DUTY: i32 = 10;
+static DEFAULT_CPU_DUTY: i32 = 20;
+static DEFAULT_SYS_DUTY: i32 = 15;
 static SIGNATURE_RX: [u8; 2] = [0xAB, 0xCD];
 static SIGNATURE_TX: [u8; 2] = [0x78, 0x34];
 
