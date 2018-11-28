@@ -29,11 +29,24 @@ use stm32f103xx_usb::UsbBus;
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
+static DEFAULT_CPU_DUTY: i32 = 0;
+static DEFAULT_SYS_DUTY: i32 = 0;
+static SIGNATURE_RX: [u8; 2] = [0xAB, 0xCD];
+static SIGNATURE_TX: [u8; 2] = [0x78, 0x34];
+
+enum RxOffset {
+    Signature = 0,
+    CpuDuty = 2,
+    SysDuty = 3,
+}
 
 #[no_mangle]
 struct MessageProcessor {
     rx_buf: VecDeque<u8>,
-    tx_buf: Vec<u8>
+    tx_buf: Vec<u8>,
+    cpu_duty: (u8, bool),
+    sys_duty: (u8, bool),
+    speed_current: [u8; 5],
 }
 
 #[no_mangle]
@@ -43,6 +56,9 @@ impl MessageProcessor {
         MessageProcessor {
             rx_buf: VecDeque::with_capacity(128),
             tx_buf: Vec::with_capacity(128),
+            cpu_duty: (DEFAULT_CPU_DUTY as u8, false),
+            sys_duty: (DEFAULT_SYS_DUTY as u8, false),
+            speed_current: [0; 5],
         }
     }
 
@@ -51,8 +67,26 @@ impl MessageProcessor {
         self.rx_buf.extend(buf.iter());
 
         // process message
+        // if SIGNATURE_RX[0] != buf[0] || SIGNATURE_RX[1] != buf[1] {
+        //     return;
+        // }
+
+
+        self.cpu_duty.1 = true;
+        self.sys_duty.1 = true;
+
+        // let new_cpu_duty = buf[RxOffset::CpuDuty as usize];
+        // if new_cpu_duty != self.cpu_duty.0 {
+        //     self.cpu_duty = (new_cpu_duty, true);
+        // }
+
+        // let new_sys_duty = buf[RxOffset::SysDuty as usize];
+        // if new_sys_duty != self.sys_duty.0 {
+        //     self.sys_duty = (new_sys_duty, true);
+        // }
+
         {
-            let (rx_slice0,rx_slice1) = self.rx_buf.as_slices();
+            let (rx_slice0, rx_slice1) = self.rx_buf.as_slices();
             self.tx_buf.extend_from_slice(rx_slice0);
             self.tx_buf.extend_from_slice(rx_slice1);
         }
@@ -69,6 +103,14 @@ impl MessageProcessor {
     pub fn consume_tx(&mut self, count: usize) {
         let new_len = self.tx_buf.len() - count;
         self.tx_buf.resize(new_len, 0);
+    }
+
+    pub fn cpu_duty_set(&mut self) {
+        self.cpu_duty.1 = false;
+    }
+
+    pub fn sys_duty_set(&mut self) {
+        self.sys_duty.1 = false;
     }
 }
 
@@ -92,6 +134,7 @@ fn main() -> ! {
 
     assert!(clocks.usbclk_valid());
 
+    let mut afio = dp.AFIO.constrain(&mut rcc.apb2);
     let mut gpioa = dp.GPIOA.split(&mut rcc.apb2);
 
     let usb_bus = UsbBus::usb(dp.USB, &mut rcc.apb1);
@@ -109,6 +152,29 @@ fn main() -> ! {
     usb_dev.force_reset().expect("reset failed");
 
     let mut msg_proc = MessageProcessor::new();
+
+    // TIM2
+    let c1 = gpioa.pa0.into_alternate_push_pull(&mut gpioa.crl);
+    let c2 = gpioa.pa1.into_alternate_push_pull(&mut gpioa.crl);
+    let c3 = gpioa.pa2.into_alternate_push_pull(&mut gpioa.crl);
+    let c4 = gpioa.pa3.into_alternate_push_pull(&mut gpioa.crl);
+
+    let mut pwm2  = dp.TIM2
+        .pwm(
+            (c1, c2, c3, c4),
+            &mut afio.mapr,
+            25.khz(),
+            clocks,
+            &mut rcc.apb1,
+        );
+
+    let max = pwm2.3.get_max_duty() as i32;
+
+    pwm2.2.enable();
+    pwm2.2.set_duty((max*DEFAULT_CPU_DUTY/100) as u16);   // cpu
+
+    pwm2.3.enable();
+    pwm2.3.set_duty((max*DEFAULT_SYS_DUTY/100) as u16);   // other fans
 
     loop {
         usb_dev.poll();
@@ -141,6 +207,21 @@ fn main() -> ! {
                 _ => { },
             }
         }
+
+        // if msg_proc.cpu_duty.1 == true {
+        //     pwm2.2.set_duty((max*20/100) as u16);   // cpu
+        //     //pwm2.2.set_duty((max*(msg_proc.cpu_duty.0 as i32)/100) as u16);   // cpu
+        //     //msg_proc.cpu_duty.1 = false;
+        // }
+
+        // if msg_proc.sys_duty.1 == true {
+        //     pwm2.3.set_duty((max*20/100) as u16);   // other fans
+        //     //pwm2.3.set_duty((max*(msg_proc.sys_duty.0 as i32)/100) as u16);   // other fans
+        //     //msg_proc.sys_duty.1 = false;
+        // }
+
+        // pwm2.2.set_duty((max*20/100) as u16);   // cpu
+        // pwm2.3.set_duty((max*20/100) as u16);   // other fans
     }
 }
 
