@@ -1,0 +1,8 @@
+[package]
+name = "pc"
+version = "0.1.0"
+authors = ["Subrat Meher <smeher02.aoe3@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+sysinfo = "0.6.2"

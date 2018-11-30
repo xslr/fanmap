@@ -28,8 +28,8 @@ use stm32f103xx_usb::UsbBus;
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
-static DEFAULT_CPU_DUTY: i32 = 20;
-static DEFAULT_SYS_DUTY: i32 = 15;
+static DEFAULT_CPU_DUTY: i32 = 50;
+static DEFAULT_SYS_DUTY: i32 = 30;
 static SIGNATURE_RX: [u8; 2] = [0xAB, 0xCD];
 static SIGNATURE_TX: [u8; 2] = [0x78, 0x34];
 
@@ -71,17 +71,17 @@ impl MessageProcessor {
         self.tx_buf.extend_from_slice(self.rx_buf.as_slice()); // echo
 
         if self.rx_buf.len() == 4 {
-            let new_cpu_duty = self.rx_buf[2];
+            let new_cpu_duty = self.rx_buf[RxOffset::CpuDuty as usize];
             if new_cpu_duty != self.cpu_duty.0 {
                 self.cpu_duty = (new_cpu_duty, true);
             }
 
-            let new_sys_duty = self.rx_buf[3];
+            let new_sys_duty = self.rx_buf[RxOffset::SysDuty as usize];
             if new_sys_duty != self.sys_duty.0 {
                 self.sys_duty = (new_sys_duty, true);
             }
 
-            self.tx_buf.push('%' as u8);
+            self.tx_buf.push(0xff);
             self.rx_buf.clear();
         }
         else {
@@ -166,10 +166,10 @@ fn main() -> ! {
     let max = pwm2.3.get_max_duty() as i32;
 
     pwm2.2.enable();
-    pwm2.2.set_duty((max*DEFAULT_CPU_DUTY/100) as u16);   // cpu
+    pwm2.2.set_duty((max*DEFAULT_CPU_DUTY/254) as u16);   // cpu
 
     pwm2.3.enable();
-    pwm2.3.set_duty((max*DEFAULT_SYS_DUTY/100) as u16);   // other fans
+    pwm2.3.set_duty((max*DEFAULT_SYS_DUTY/254) as u16);   // other fans
 
     loop {
         usb_dev.poll();
@@ -202,12 +202,12 @@ fn main() -> ! {
         }
 
         if msg_proc.cpu_duty.1 == true {
-            pwm2.2.set_duty((max*(msg_proc.cpu_duty.0 as i32)/100) as u16);   // cpu
+            pwm2.2.set_duty((max*(msg_proc.cpu_duty.0 as i32)/254) as u16);   // cpu
             msg_proc.cpu_duty.1 = false;
         }
 
         if msg_proc.sys_duty.1 == true {
-            pwm2.3.set_duty((max*(msg_proc.sys_duty.0 as i32)/100) as u16);   // other fans
+            pwm2.3.set_duty((max*(msg_proc.sys_duty.0 as i32)/254) as u16);   // other fans
             msg_proc.sys_duty.1 = false;
         }
     }
