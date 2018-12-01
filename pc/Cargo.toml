@@ -6,3 +6,4 @@ edition = "2018"
 
 [dependencies]
 sysinfo = "0.6.2"
+serial = "0.4"
