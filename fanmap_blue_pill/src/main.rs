@@ -1,33 +1,27 @@
 #![no_std]
 #![no_main]
-#![feature(alloc)]
-#![feature(alloc_error_handler)]
 #![feature(lang_items)]
 
 mod cdc_acm;
 
-extern crate alloc;
-extern crate alloc_cortex_m;
 extern crate cortex_m;
 #[macro_use] extern crate cortex_m_rt as rt;
 extern crate panic_semihosting;
 extern crate stm32f103xx_hal as hal;
 extern crate usb_device;
 extern crate stm32f103xx_usb;
+extern crate arrayvec;
 
-use alloc::vec::Vec;
-use alloc_cortex_m::CortexMHeap;
 use hal::prelude::*;
 use hal::stm32f103xx;
 use rt::ExceptionFrame;
+use arrayvec::ArrayVec;
 
 use usb_device::prelude::*;
 use stm32f103xx_usb::UsbBus;
 
 
-#[global_allocator]
-static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
-
+const MSG_LEN: usize = 4;
 static DEFAULT_CPU_DUTY: i32 = 50;
 static DEFAULT_SYS_DUTY: i32 = 30;
 static SIGNATURE_RX: [u8; 2] = [0xAB, 0xCD];
@@ -41,8 +35,8 @@ enum RxOffset {
 
 #[no_mangle]
 struct MessageProcessor {
-    rx_buf: Vec<u8>,
-    tx_buf: Vec<u8>,
+    rx_buf: ArrayVec<[u8; MSG_LEN]>,
+    tx_buf: ArrayVec<[u8; MSG_LEN]>,
     cpu_duty: (u8, bool),
     sys_duty: (u8, bool),
     speed_current: [u8; 5],
@@ -53,24 +47,28 @@ impl MessageProcessor {
     #[no_mangle]
     fn new() -> MessageProcessor {
         MessageProcessor {
-            rx_buf: Vec::with_capacity(128),
-            tx_buf: Vec::with_capacity(128),
+            rx_buf: ArrayVec::new(),
+            tx_buf: ArrayVec::new(),
             cpu_duty: (DEFAULT_CPU_DUTY as u8, false),
             sys_duty: (DEFAULT_SYS_DUTY as u8, false),
             speed_current: [0; 5],
         }
     }
 
-    #[no_mangle]
     pub fn rx_msg(&mut self, buf: &[u8]) {
         // if SIGNATURE_RX[0] != buf[1] || SIGNATURE_RX[1] != buf[0] {
         //     return;
         // }
 
-        self.rx_buf.extend_from_slice(buf);
-        self.tx_buf.extend_from_slice(self.rx_buf.as_slice()); // echo
+        for elem in buf {
+            if self.rx_buf.is_full() {
+                break;
+            }
 
-        if self.rx_buf.len() == 4 {
+            self.rx_buf.push(*elem);
+        }
+
+        if self.rx_buf.len() == MSG_LEN {
             let new_cpu_duty = self.rx_buf[RxOffset::CpuDuty as usize];
             if new_cpu_duty != self.cpu_duty.0 {
                 self.cpu_duty = (new_cpu_duty, true);
@@ -81,11 +79,8 @@ impl MessageProcessor {
                 self.sys_duty = (new_sys_duty, true);
             }
 
-            self.tx_buf.push(0xff);
+            self.tx_buf.clone_from(&self.rx_buf);
             self.rx_buf.clear();
-        }
-        else {
-            self.tx_buf.push('X' as u8);
         }
     }
 
@@ -96,8 +91,7 @@ impl MessageProcessor {
 
     #[no_mangle]
     pub fn consume_tx(&mut self, count: usize) {
-        let new_len = self.tx_buf.len() - count;
-        self.tx_buf.resize(new_len, 0);
+        self.tx_buf.clear();
     }
 
     pub fn cpu_duty_set(&mut self) {
@@ -111,11 +105,6 @@ impl MessageProcessor {
 
 #[entry]
 fn main() -> ! {
-    // Initialize the allocator BEFORE using it
-    let start = rt::heap_start() as usize;
-    let size = 1024; // in bytes
-    unsafe { ALLOCATOR.init(start, size) }
-
     let dp = stm32f103xx::Peripherals::take().unwrap();
 
     let mut flash = dp.FLASH.constrain();
@@ -166,10 +155,10 @@ fn main() -> ! {
     let max = pwm2.3.get_max_duty() as i32;
 
     pwm2.2.enable();
-    pwm2.2.set_duty((max*DEFAULT_CPU_DUTY/254) as u16);   // cpu
+    pwm2.2.set_duty((max*DEFAULT_CPU_DUTY/100) as u16);   // cpu
 
     pwm2.3.enable();
-    pwm2.3.set_duty((max*DEFAULT_SYS_DUTY/254) as u16);   // other fans
+    pwm2.3.set_duty((max*DEFAULT_SYS_DUTY/100) as u16);   // other fans
 
     loop {
         usb_dev.poll();
@@ -202,12 +191,12 @@ fn main() -> ! {
         }
 
         if msg_proc.cpu_duty.1 == true {
-            pwm2.2.set_duty((max*(msg_proc.cpu_duty.0 as i32)/254) as u16);   // cpu
+            pwm2.2.set_duty((max*(msg_proc.cpu_duty.0 as i32)/100) as u16);   // cpu
             msg_proc.cpu_duty.1 = false;
         }
 
         if msg_proc.sys_duty.1 == true {
-            pwm2.3.set_duty((max*(msg_proc.sys_duty.0 as i32)/254) as u16);   // other fans
+            pwm2.3.set_duty((max*(msg_proc.sys_duty.0 as i32)/100) as u16);   // other fans
             msg_proc.sys_duty.1 = false;
         }
     }
@@ -221,18 +210,4 @@ fn HardFault(ef: &ExceptionFrame) -> ! {
 #[exception]
 fn DefaultHandler(irqn: i16) {
     panic!("Unhandled exception (IRQn = {})", irqn);
-}
-
-#[alloc_error_handler]
-fn rust_oom(_: core::alloc::Layout) -> ! {
-    panic!("Out of memory.");
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rust_begin_unwind(
-    _args: ::core::fmt::Arguments,
-    _file: &'static str,
-    _line: u32,
-) -> ! {
-    panic!("rust_begin_unwind");
 }
