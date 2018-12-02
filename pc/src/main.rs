@@ -29,7 +29,7 @@ fn main() {
     loop {
         let temp = get_max_temp(&mut sys);
         let temp_distance: i32 = target_temp - temp;
-        let next_update_millis = if temp_distance < hyst {
+        let next_update_msec = if temp_distance < hyst {
             fan_duty = if fan_duty < 98 { fan_duty + 2 } else { 100 };
             2000
         } else if temp_distance > (2 * hyst) {
@@ -46,15 +46,16 @@ fn main() {
 
         println!("t={} d={}, rbuf={:?}", temp, fan_duty, rbuf);
 
-        thread::sleep(time::Duration::from_millis(next_update_millis));
+        thread::sleep(time::Duration::from_millis(next_update_msec));
     }
 }
 
 fn get_max_temp(sys: &mut System) -> i32 {
     let mut max_temp = 0;
 
-    sys.refresh_all();
-    // Components temperature:
+    // refresh temperature, among other things
+    sys.refresh_system();
+
     for component in sys.get_components_list() {
         let name = component.get_label();
         let temp = component.get_temperature() as i32;
