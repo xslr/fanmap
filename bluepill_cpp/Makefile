@@ -3,8 +3,8 @@ CC=$(PREFIX)gcc
 OBJCOPY=$(PREFIX)objcopy
 OD=bin
 
-PC_CFLAGS += `pkg-config --cflags libusb-1.0`
-PC_LDFLAGS += `pkg-config --libs libusb-1.0`
+PC_CFLAGS += `pkg-config --cflags libusb-1.0` -std=c++17 -g
+PC_LDFLAGS += `pkg-config --libs libusb-1.0` -lstdc++fs -pthread
 
 all: realall.really fanmap
 
@@ -39,7 +39,7 @@ libopencm3/lib/libopencm3_%.a: libopencm3/Makefile
 	$(OBJCOPY) -Oihex $(*).elf $(*).hex
 
 fanmap: fanmap.cc
-	gcc -o $@ $< $(PC_CFLAGS) $(PC_LDFLAGS)
+	g++ $< $(PC_CFLAGS) $(PC_LDFLAGS) -o $@
 
 outdir:
 	mkdir -p $(OD)/stm32
