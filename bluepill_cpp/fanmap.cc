@@ -1,12 +1,14 @@
 #include <libusb.h>
 #include <atomic>
 #include <cassert>
+#include <condition_variable>
 #include <cstdio>
 #include <chrono>
 #include <thread>
 #include <vector>
 #include <string>
 #include <memory>
+#include <mutex>
 #include <fstream>
 #include <iostream>
 #include <regex>
@@ -21,12 +23,16 @@ const uint16_t FANMAP_OUT_ENDPOINT = 0x02;
 const uint16_t FANMAP_IN_ENDPOINT = 0x81;
 const std::chrono::milliseconds TEMPERATURE_READ_INTERVAL(500);
 
-std::atomic<bool> run_thread = true;
 uint16_t target_temperature = 65;
 
 const std::string SENSOR_NAME = "coretemp";
 
 uint8_t tx_buf[128];
+
+std::mutex m;
+std::condition_variable cv;
+std::atomic<bool> run_thread(true);
+std::atomic<int> temperature(0);
 
 struct libusb_iso_packet_descriptor iso_desc[] = {};
 
@@ -93,14 +99,21 @@ void temp_reader_function() {
   auto sensors = get_cpu_temp_sensors();
   std::cout << "Found " << sensors.size() << " sensors." << std::endl;
 
-  while (run_thread.load()) {
+  while (run_thread) {
+    std::unique_lock<std::mutex> lk(m);
+    cv.wait(lk);
+
     std::this_thread::sleep_for(TEMPERATURE_READ_INTERVAL);
+
     int max_temp = 0;
     for (auto &sensor : sensors) {
       int reading = sensor.read();
       max_temp = std::max(max_temp, reading);
     }
     std::cout << "max_temp = " << max_temp << std::endl;
+    temperature = max_temp;
+    
+    cv.notify_one();
   }
 }
 
@@ -131,16 +144,27 @@ int main() {
   tx_buf[0] = 30;
   tx_buf[1] = 40;
 
-  int xferred;
-  r = libusb_interrupt_transfer(dev, FANMAP_OUT_ENDPOINT, tx_buf, 16, &xferred, 5000);
-  if (r < 0) {
-    fprintf(stderr, "transfer error: %s\n", libusb_error_name(r));
-    return r;
-  } else {
-    printf("sent %d bytes\n", xferred);
+  std::thread temp_reader_thread(temp_reader_function);
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+  cv.notify_one();
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  while (1) {
+    std::unique_lock<std::mutex> lk(m);
+    cv.wait(lk);
+
+    int xferred;
+    r = libusb_interrupt_transfer(dev, FANMAP_OUT_ENDPOINT, tx_buf, 16, &xferred, 5000);
+    if (r < 0) {
+      fprintf(stderr, "transfer error: %s\n", libusb_error_name(r));
+      return r;
+    } else {
+      printf("sent %d bytes\n", xferred);
+    }
+
+    cv.notify_one();
   }
 
-  std::thread temp_reader_thread(temp_reader_function);
   temp_reader_thread.join();
 
   libusb_close(dev);

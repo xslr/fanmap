@@ -156,6 +156,9 @@ static void blink_tick() {
 
 static uint8_t pwm_duty_1 = 15;
 static uint8_t pwm_duty_2 = 15;
+static uint8_t pwm_duty_3 = 15;
+static uint8_t pwm_duty_4 = 15;
+static uint8_t pwm_duty_5 = 15;
 
 static bool haveRxCb = false;
 
@@ -215,17 +218,24 @@ static void hid_set_config(usbd_device *dev, uint16_t wValue)
 
 void clock_setup() {
   rcc_periph_clock_enable(RCC_GPIOA);
+  rcc_periph_clock_enable(RCC_GPIOB);
   rcc_periph_clock_enable(RCC_GPIOC);
   rcc_periph_clock_enable(RCC_TIM2);
+  rcc_periph_clock_enable(RCC_TIM3);
 }
 
 void gpio_setup() {
   // fan pwm
   gpio_set_mode(GPIOA, GPIO_MODE_OUTPUT_50_MHZ,
                 GPIO_CNF_OUTPUT_ALTFN_PUSHPULL,
-                GPIO_TIM2_CH2 |  // PA1
-                GPIO_TIM2_CH3);  // PA2
+                GPIO_TIM2_CH4 |  // PA3
+                GPIO_TIM2_CH3 |  // PA2
+                GPIO_TIM2_CH2);  // PA1
 
+  gpio_set_mode(GPIOB, GPIO_MODE_OUTPUT_50_MHZ,
+                GPIO_CNF_OUTPUT_ALTFN_PUSHPULL,
+                GPIO_TIM3_CH4 |  // PB1
+                GPIO_TIM3_CH3);  // PB0
   // usb
   gpio_set_mode(GPIOA, GPIO_MODE_OUTPUT_2_MHZ,
                 GPIO_CNF_OUTPUT_PUSHPULL, GPIO12);
@@ -237,6 +247,7 @@ void gpio_setup() {
 }
 
 void timer_setup() {
+  // TIM2
   //nvic_enable_irq(NVIC_TIM2_IRQ);
   timer_set_mode(TIM2, TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
   rcc_periph_reset_pulse(RST_TIM2);
@@ -256,20 +267,58 @@ void timer_setup() {
   /* Counter enable. */
   timer_enable_counter(TIM2);
 
-  timer_disable_oc_output(TIM2, TIM_OC2);
-  timer_set_oc_mode(TIM2, TIM_OC2, TIM_OCM_PWM1);
-  timer_set_oc_value(TIM2, TIM_OC2, 0);
-  timer_enable_oc_output(TIM2, TIM_OC2);
+  timer_disable_oc_output(TIM2, TIM_OC4);
+  timer_set_oc_mode(TIM2, TIM_OC4, TIM_OCM_PWM1);
+  timer_set_oc_value(TIM2, TIM_OC4, 0);
+  timer_enable_oc_output(TIM2, TIM_OC4);
 
   timer_disable_oc_output(TIM2, TIM_OC3);
   timer_set_oc_mode(TIM2, TIM_OC3, TIM_OCM_PWM1);
   timer_set_oc_value(TIM2, TIM_OC3, 0);
   timer_enable_oc_output(TIM2, TIM_OC3);
+
+  timer_disable_oc_output(TIM2, TIM_OC2);
+  timer_set_oc_mode(TIM2, TIM_OC2, TIM_OCM_PWM1);
+  timer_set_oc_value(TIM2, TIM_OC2, 0);
+  timer_enable_oc_output(TIM2, TIM_OC2);
+
+  // TIM3
+  //nvic_enable_irq(NVIC_TIM3_IRQ);
+  timer_set_mode(TIM3, TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
+  rcc_periph_reset_pulse(RST_TIM3);
+  timer_set_prescaler(TIM3, ((rcc_apb1_frequency) / 1350000));
+
+  /* Disable preload. */
+  timer_enable_preload(TIM3);
+
+  /* Continous mode. */
+  timer_continuous_mode(TIM3);
+
+  timer_set_repetition_counter(TIM3, 0);
+
+  /* Period (25kHz). */
+  timer_set_period(TIM3, 100);
+
+  /* Counter enable. */
+  timer_enable_counter(TIM3);
+
+  timer_disable_oc_output(TIM3, TIM_OC4);
+  timer_set_oc_mode(TIM3, TIM_OC4, TIM_OCM_PWM1);
+  timer_set_oc_value(TIM3, TIM_OC4, 0);
+  timer_enable_oc_output(TIM3, TIM_OC4);
+
+  timer_disable_oc_output(TIM3, TIM_OC3);
+  timer_set_oc_mode(TIM3, TIM_OC3, TIM_OCM_PWM1);
+  timer_set_oc_value(TIM3, TIM_OC3, 0);
+  timer_enable_oc_output(TIM3, TIM_OC3);
 }
 
 void update_fan_duty_cycles() {
-  timer_set_oc_value(TIM2, TIM_OC2, pwm_duty_1);
-  timer_set_oc_value(TIM2, TIM_OC3, pwm_duty_2);
+  timer_set_oc_value(TIM2, TIM_OC2, pwm_duty_1); // fan1
+  timer_set_oc_value(TIM2, TIM_OC3, pwm_duty_2); // fan2
+  timer_set_oc_value(TIM2, TIM_OC4, pwm_duty_3); // fan3-cpu
+  timer_set_oc_value(TIM3, TIM_OC3, pwm_duty_4); // fan4
+  timer_set_oc_value(TIM3, TIM_OC4, pwm_duty_5); // fan5
 }
 
 int main(void) {
@@ -311,10 +360,23 @@ int main(void) {
       haveRxCb = false;
       blink(BLINK_1x);
       int len = usbd_ep_read_packet(usbd_dev, EP_RAW_HID_OUT, rxbuf, 64);
-      if (len >=2) {
+      if (len == 2) {
+        pwm_duty_1
+          = pwm_duty_2
+          = pwm_duty_4
+          = pwm_duty_5
+          = rxbuf[0] > 100 ? 100 : rxbuf[0];
+        pwm_duty_3 = rxbuf[1] > 100 ? 100 : rxbuf[1];
+        update_fan_duty_cycles();
+      } else if (len == 5) {
         pwm_duty_1 = rxbuf[0] > 100 ? 100 : rxbuf[0];
         pwm_duty_2 = rxbuf[1] > 100 ? 100 : rxbuf[1];
+        pwm_duty_3 = rxbuf[2] > 100 ? 100 : rxbuf[2];
+        pwm_duty_4 = rxbuf[3] > 100 ? 100 : rxbuf[3];
+        pwm_duty_5 = rxbuf[4] > 100 ? 100 : rxbuf[4];
         update_fan_duty_cycles();
+      } else {
+        //unsupported command
       }
 
       memcpy(txbuf, rxbuf, len);
