@@ -9,7 +9,7 @@ from sys import platform
 if platform == 'win32':
     import wmi
 
-TARGET_CPU_TEMP = 65
+TARGET_CPU_TEMP = 70
 MAX_TEMPERATURE_DELTA = 2
 UPDATE_INTERVAL = 1
 MIN_CPU_DUTY = 10
@@ -68,7 +68,7 @@ def start_update_loop(handle, temperature_handle):
         if deltaT > MAX_TEMPERATURE_DELTA:
             cpu_duty += (deltaT*2.0)
             cpu_duty = min(cpu_duty, MAX_CPU_DUTY)
-        elif -deltaT > -MAX_TEMPERATURE_DELTA:
+        elif deltaT < -MAX_TEMPERATURE_DELTA:
             cpu_duty += int(deltaT/2.0)
             cpu_duty = max(cpu_duty, MIN_CPU_DUTY)
 
