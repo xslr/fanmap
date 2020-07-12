@@ -1,6 +1,5 @@
 from collections import namedtuple
 import time
-# import usb1
 import usb.core
 import usb.util
 import os
@@ -98,7 +97,7 @@ def lerp_curve_points_to_duty(p_low, p_high, temp) -> int:
     elif None != p_high:
         duty = p_low.duty + ((temp - p_low.temp) / (p_high.temp - p_low.temp) * (p_high.duty - p_low.duty))
 
-    return duty
+    return int(duty)
 
 
 def temp_to_duty(temp) -> int:
