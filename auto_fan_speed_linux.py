@@ -1,3 +1,4 @@
+from collections import namedtuple
 import time
 # import usb1
 import usb.core
@@ -30,6 +31,17 @@ HWMON_ROOT = Path('/sys/class/hwmon')
 sys_duty = SYS_DUTY_DFL
 cpu_duty = CPU_DUTY_DFL
 
+CurvePoint = namedtuple('CurvePoint', ['temp', 'duty'])
+cpu_fan_curve = [
+    CurvePoint(0, 10),
+    CurvePoint(30, 10),
+    CurvePoint(40, 20),
+    CurvePoint(50, 20),
+    CurvePoint(60, 30),
+    CurvePoint(70, 70),
+    CurvePoint(80, 100),
+]
+
 
 def get_max_cpu_temp_win32(wmi_c) -> float:
     temp = 0
@@ -59,23 +71,63 @@ def get_max_cpu_temp(temperature_handle) -> float:
         return get_max_cpu_temp_win32(temperature_handle)
 
 
+def curve_points(temp):
+    num_curve_pts = len(cpu_fan_curve)
+    for i in range(0, num_curve_pts):
+        this_curve_point = cpu_fan_curve[i]
+        if i + 1 == num_curve_pts:
+            next_curve_point = None
+        else:
+            next_curve_point = cpu_fan_curve[i + 1]
+
+        if (temp >= this_curve_point.temp):
+            if next_curve_point:
+                if temp < next_curve_point.temp:
+                    return this_curve_point, next_curve_point
+                else:  # temp >= temp of next curve point. evaluate next curve point
+                    continue
+            else:
+                return this_curve_point, None
+
+
+def lerp_curve_points_to_duty(p_low, p_high, temp) -> int:
+    duty = 100
+    if None == p_low:
+        if None != p_high:
+            duty = p_high.duty
+    elif None != p_high:
+        duty = p_low.duty + ((temp - p_low.temp) / (p_high.temp - p_low.temp) * (p_high.duty - p_low.duty))
+
+    return duty
+
+
+def temp_to_duty(temp) -> int:
+    duty = 100
+    p_low, p_high = curve_points(temp)
+    duty = lerp_curve_points_to_duty(p_low, p_high, temp)
+    print(f'\r{temp}°C - {duty}% - {p_low} - {p_high}', end='')
+
+    return duty
+
+
 def start_update_loop(handle, temperature_handle):
     global cpu_duty
 
     while not time.sleep(UPDATE_INTERVAL):
         max_temp = get_max_cpu_temp(temperature_handle)
-        deltaT = max_temp - TARGET_CPU_TEMP
-        if deltaT > MAX_TEMPERATURE_DELTA:
-            cpu_duty += (deltaT*2.0)
-            cpu_duty = min(cpu_duty, MAX_CPU_DUTY)
-        elif deltaT < -MAX_TEMPERATURE_DELTA:
-            cpu_duty += int(deltaT/2.0)
-            cpu_duty = max(cpu_duty, MIN_CPU_DUTY)
+        cpu_duty = temp_to_duty(max_temp)
+        # deltaT = max_temp - TARGET_CPU_TEMP
+        # if deltaT > MAX_TEMPERATURE_DELTA:
+        #     cpu_duty += (deltaT*2.0)
+        #     cpu_duty = min(cpu_duty, MAX_CPU_DUTY)
+        # elif deltaT < -MAX_TEMPERATURE_DELTA:
+        #     cpu_duty += int(deltaT/2.0)
+        #     cpu_duty = max(cpu_duty, MIN_CPU_DUTY)
 
-        print('temp={}, duty={}'.format(max_temp, cpu_duty))
+        # print('temp={}, duty={}'.format(max_temp, cpu_duty), end='\r')
 
         # [fan5, fan4, fan3, fan2, fan1]
-        tx_count = handle.write(USB_EP_OUT, [sys_duty, sys_duty, int(cpu_duty), sys_duty, sys_duty], 500)
+        tx_count = handle.write(USB_EP_OUT, [sys_duty, sys_duty, int(cpu_duty), int(cpu_duty), sys_duty], 500)
         if tx_count != 5:
             raise RuntimeError('sent {} bytes'.format(tx_count))
 
