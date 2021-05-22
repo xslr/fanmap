@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+
 from collections import namedtuple
 import time
 import usb.core
@@ -32,13 +34,23 @@ cpu_duty = CPU_DUTY_DFL
 
 CurvePoint = namedtuple('CurvePoint', ['temp', 'duty'])
 cpu_fan_curve = [
+    # CurvePoint(0, 40),
+    # CurvePoint(30, 40),
+    # CurvePoint(40, 40),
+    # CurvePoint(50, 40),
+    # CurvePoint(60, 40),
+    # CurvePoint(70, 60),
+    # CurvePoint(80, 80),
+    # CurvePoint(90, 100),
+
     CurvePoint(0, 10),
     CurvePoint(30, 10),
-    CurvePoint(40, 20),
-    CurvePoint(50, 20),
-    CurvePoint(60, 30),
-    CurvePoint(70, 70),
-    CurvePoint(80, 100),
+    CurvePoint(40, 10),
+    CurvePoint(50, 10),
+    CurvePoint(60, 15),
+    CurvePoint(70, 30),
+    CurvePoint(80, 40),
+    CurvePoint(90, 100),
 ]
 
 
@@ -104,44 +116,50 @@ def temp_to_duty(temp) -> int:
     duty = 100
     p_low, p_high = curve_points(temp)
     duty = lerp_curve_points_to_duty(p_low, p_high, temp)
-    print(f'\r{temp}°C - {duty}% - {p_low} - {p_high}', end='')
+    print(f'\r{temp}°C - {duty}% - temp=({p_low.temp}-{p_high.temp}°C) - duty=({p_low.duty}-{p_high.duty}%)', end='')
 
     return duty
 
 
-def start_update_loop(handle, temperature_handle):
+def start_update_loop(usb_handle, sensor_handle):
     global cpu_duty
 
+    if len(sensor_handle) == 0:
+        raise RuntimeError('no temperature handle found')
+
+    print(f'Will use following handles to read temperature:')
+    for handle in sensor_handle:
+        print(handle)
+
     while not time.sleep(UPDATE_INTERVAL):
-        max_temp = get_max_cpu_temp(temperature_handle)
+        max_temp = get_max_cpu_temp(sensor_handle)
         cpu_duty = temp_to_duty(max_temp)
-        # deltaT = max_temp - TARGET_CPU_TEMP
-        # if deltaT > MAX_TEMPERATURE_DELTA:
-        #     cpu_duty += (deltaT*2.0)
-        #     cpu_duty = min(cpu_duty, MAX_CPU_DUTY)
-        # elif deltaT < -MAX_TEMPERATURE_DELTA:
-        #     cpu_duty += int(deltaT/2.0)
-        #     cpu_duty = max(cpu_duty, MIN_CPU_DUTY)
 
         # print('temp={}, duty={}'.format(max_temp, cpu_duty), end='\r')
 
         # [fan5, fan4, fan3, fan2, fan1]
-        tx_count = handle.write(USB_EP_OUT, [sys_duty, sys_duty, int(cpu_duty), int(cpu_duty), sys_duty], 500)
+        cpu_duty = int(cpu_duty)
+        ps_duty = min(100, max(sys_duty+30, cpu_duty))
+        tx_count = usb_handle.write(USB_EP_OUT, [sys_duty, sys_duty, cpu_duty, cpu_duty, sys_duty], 500)
         if tx_count != 5:
             raise RuntimeError('sent {} bytes'.format(tx_count))
 
 
 if __name__ == '__main__':
-    temperature_handle = None
+    sensor_handle = None
 
     bluepill = usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
     if bluepill is None:
         raise RuntimeError('Device not found')
 
     if platform.startswith('linux'):
-        temperature_handle = []
+        sensor_handle = []
         for hwmon_entry in HWMON_ROOT.iterdir():
-            hwmon_name = hwmon_entry.joinpath('name').open(mode='r').readline().strip()
+            try:
+                hwmon_name = hwmon_entry.joinpath('name').open(mode='r').readline().strip()
+            except:
+                hwmon_name = ''
+
             if hwmon_name != 'coretemp':
                 continue
 
@@ -149,13 +167,13 @@ if __name__ == '__main__':
                 if not sensor_entry.name.endswith('input'):
                     continue
 
-                temperature_handle.append(sensor_entry.open(mode='r'))
+                sensor_handle.append(sensor_entry.open(mode='r'))
 
         if bluepill.is_kernel_driver_active(USB_IF):
             print('detaching kernel driver')
             bluepill.detach_kernel_driver(USB_IF)
 
     elif platform.startswith('win32'):
-        temperature_handle = wmi.WMI(namespace='root\\WMI')
+        sensor_handle = wmi.WMI(namespace='root\\WMI')
 
-    start_update_loop(bluepill, temperature_handle)
+    start_update_loop(bluepill, sensor_handle)
